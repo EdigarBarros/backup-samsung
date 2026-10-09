@@ -28,8 +28,9 @@ data original, então as fotos continuam na ordem certa na galeria nova.
 ### O que NÃO dá para copiar pelo cabo (sem root)
 
 - Dados internos dos apps (logins, jogos, configurações).
-- O **histórico de conversas do WhatsApp** em formato que o iPhone aceite. O arquivo
-  `msgstore.db.crypt` é criptografado e só restaura em Android.
+- O **histórico do WhatsApp** direto pro iPhone. O backup (`msgstore.db.crypt`) é
+  criptografado e só restaura em Android. Veja a seção do WhatsApp abaixo para o caminho
+  que funciona.
 - MMS e mensagens RCS ("Chat").
 - Senhas, apps de banco e autenticadores 2FA.
 - Samsung Notes, Samsung Pass e Samsung Saúde.
@@ -68,19 +69,45 @@ Aparece este menu:
 ```
   1. Verificar se o celular está conectado
   2. Fazer BACKUP COMPLETO
-  3. Enviar o backup para o GOOGLE DRIVE
-  4. Preparar arquivos para o IPHONE
-  5. Checklist antes de vender
-  6. Instalar ferramentas (ADB e rclone)
+  3. Backup do WHATSAPP (conversas + mídias)
+  4. Restaurar o WhatsApp em OUTRO Android
+  5. Enviar o backup para o GOOGLE DRIVE
+  6. Preparar arquivos para o IPHONE
+  7. Checklist antes de vender
+  8. Instalar ferramentas (ADB e rclone)
 ```
 
-Na primeira vez, use a ordem **6 → 1 → 2**.
+Na primeira vez, use a ordem **8 → 1 → 2**.
 
 O backup fica na pasta `Backup_<fabricante>_<modelo>`, ao lado do programa.
 
-### 4a. Mandar para o Google Drive
+### 4. WhatsApp: guardar agora, restaurar depois
 
-Opção **3** do menu. Na primeira vez abre o navegador para você entrar na conta
+O backup do WhatsApp **não abre direto no iPhone**, porque o iPhone só restaura
+backups do iCloud. Mas dá para guardar agora e usar depois neste caminho:
+
+**backup (opção 3) → outro Android com o MESMO NÚMERO (opção 4) → restaurar →
+"Mover para iOS" desse Android para o iPhone.**
+
+1. No WhatsApp: **Configurações > Conversas > Backup de conversas > Fazer backup**.
+2. Opção **3** do menu. O programa copia conversas, mídias e configurações, **mostra
+   a data do backup e avisa se ele não for de hoje**. Também cria o arquivo
+   `WHATSAPP_LEIA.txt` com o passo a passo da restauração.
+3. Quando tiver o Android emprestado: instale o WhatsApp **sem abrir**, conecte no PC
+   e use a opção **4**. Depois abra o WhatsApp, confirme seu número e toque em
+   **Restaurar**.
+4. No iPhone novo (ou apagado), use o **Mover para iOS** a partir desse Android e
+   marque o WhatsApp.
+
+> Se o **backup criptografado de ponta a ponta** estiver ativo no WhatsApp, guarde a
+> senha ou a chave de 64 dígitos. Sem ela, ninguém recupera as conversas.
+>
+> Garantia extra: deixe também o backup do WhatsApp no Google Drive (passo 1). No
+> Android emprestado, logado na mesma conta Google, ele restaura de lá.
+
+### 5a. Mandar para o Google Drive
+
+Opção **5** do menu. Na primeira vez abre o navegador para você entrar na conta
 Google. Quem faz o envio é o [rclone](https://rclone.org), que é open source. O
 programa confere o espaço livre no Drive, envia, continua de onde parou se cair, e
 no fim confere se tudo chegou.
@@ -89,9 +116,9 @@ no fim confere se tudo chegou.
 > pode assinar o Google One, mandar só uma parte (`drive --subpasta arquivos/DCIM`)
 > ou guardar o resto num HD externo.
 
-### 4b. Passar para o iPhone
+### 5b. Passar para o iPhone
 
-Opção **4** do menu. Ela cria `Para_iPhone/` com:
+Opção **6** do menu. Ela cria `Para_iPhone/` com:
 
 - `Fotos_e_Videos/`: câmera, prints, downloads e mídias do WhatsApp, juntos e
   prontos pra mandar ao iCloud ou ao Google Fotos (sem ocupar espaço duplicado no
@@ -115,6 +142,8 @@ python backup_android.py backup --destino "D:\Backup S24" --apks
 python backup_android.py drive  --pasta "D:\Backup S24"
 python backup_android.py iphone --pasta "D:\Backup S24"
 python backup_android.py checklist
+python backup_android.py whatsapp
+python backup_android.py whatsapp-restaurar --pasta "D:\Backup S24"   # no outro Android
 ```
 
 Categorias aceitas no `--somente`: `fotos`, `whatsapp`, `telegram`, `downloads`,

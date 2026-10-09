@@ -49,8 +49,13 @@ def main():
                    "ro.build.version.release": "14"}.get(cmd.split()[1], "x"))
         elif cmd.startswith("find"):
             do_find(cmd)
-        elif cmd.startswith("ls /storage"):
+        elif cmd == "ls /storage 2>/dev/null":
             print("  ".join(sorted(os.listdir(PHONE))))
+        elif cmd.startswith("ls "):
+            target = local(shlex.split(cmd)[1])
+            print("\n".join(sorted(os.listdir(target))) if os.path.isdir(target) else "No such file")
+        elif cmd.startswith("mkdir -p "):
+            os.makedirs(local(shlex.split(cmd)[2]), exist_ok=True)
         elif cmd.startswith("content query"):
             uri = cmd.split("--uri ")[1].split()[0]
             name = {"content://com.android.contacts/data": "contacts.txt", "content://sms": "sms.txt",
@@ -61,6 +66,11 @@ def main():
                              else "No result found.\n")
         elif cmd.startswith("pm list packages"):
             print("package:com.whatsapp\npackage:com.nubank")
+        return 0
+    if args[0] == "push":
+        src, dst = args[1], args[2]
+        shutil.copytree(src, os.path.join(local(dst.rstrip("/")), os.path.basename(src)),
+                        dirs_exist_ok=True)
         return 0
     if args[0] == "pull":
         srcs = [a for a in args[1:-1] if a != "-a"]

@@ -1,5 +1,6 @@
 import os
 import stat
+import time
 import sys
 import tempfile
 import unittest
@@ -139,3 +140,64 @@ class EndToEndTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhatsAppTests(unittest.TestCase):
+    WA = "emulated/0/Android/media/com.whatsapp/WhatsApp"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.phone = self.tmp / "phone"
+        wa = self.phone / self.WA
+        for rel, data in {"Databases/msgstore.db.crypt14": b"chat" * 100,
+                          "Databases/msgstore-2026-10-08.1.db.crypt14": b"old" * 10,
+                          "Backups/wa.db.crypt14": b"contacts",
+                          "Media/WhatsApp Images/IMG-1.jpg": b"img"}.items():
+            p = wa / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        (self.phone / "self").mkdir()
+        self.target = self.tmp / "target"
+        (self.target / "emulated" / "0").mkdir(parents=True)
+        (self.target / "self").mkdir()
+        fake = self.tmp / "adb"
+        fake.write_text(f"#!/bin/sh\nexec {sys.executable} {ROOT / 'tests' / 'fake_adb.py'} \"$@\"\n")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        os.environ.update(ADB=str(fake), FAKE_PHONE=str(self.phone), FAKE_DATA=str(self.tmp))
+        self.out = self.tmp / "backup"
+
+    @unittest.skipIf(os.name == "nt", "adb falso usa shell script")
+    def test_backup_and_restore_on_other_phone(self):
+        self.assertEqual(ba.main(["whatsapp", "--destino", str(self.out), "--sim"]), 0)
+        local_db = self.out / "arquivos/Android/media/com.whatsapp/WhatsApp/Databases/msgstore.db.crypt14"
+        self.assertEqual(local_db.read_bytes(), b"chat" * 100)
+        self.assertIn("conversas salvas em", (self.out / "WHATSAPP_LEIA.txt").read_text("utf-8"))
+
+        # Novo backup com o MESMO tamanho, mas conteúdo e data diferentes: tem que recopiar.
+        remote_db = self.phone / self.WA / "Databases/msgstore.db.crypt14"
+        remote_db.write_bytes(b"CHAT" * 100)
+        os.utime(remote_db, (time.time() + 60, time.time() + 60))
+        self.assertEqual(ba.main(["whatsapp", "--destino", str(self.out), "--sim"]), 0)
+        self.assertEqual(local_db.read_bytes(), b"CHAT" * 100)
+
+        os.environ["FAKE_PHONE"] = str(self.target)
+        self.assertEqual(ba.main(["whatsapp-restaurar", "--pasta", str(self.out), "--sim"]), 0)
+        restored = self.target / self.WA
+        self.assertEqual((restored / "Databases/msgstore.db.crypt14").read_bytes(), b"CHAT" * 100)
+        self.assertTrue((restored / "Backups/wa.db.crypt14").exists())
+        self.assertTrue((restored / "Media/WhatsApp Images/IMG-1.jpg").exists())
+
+    @unittest.skipIf(os.name == "nt", "adb falso usa shell script")
+    def test_old_backup_is_flagged(self):
+        db = self.phone / self.WA / "Databases/msgstore.db.crypt14"
+        old = time.time() - 5 * 86400
+        os.utime(db, (old, old))
+        for f in (self.phone / self.WA / "Databases").iterdir():
+            os.utime(f, (old, old))
+        self.assertEqual(ba.main(["whatsapp", "--destino", str(self.out), "--sim"]), 2)
+        self.assertIn("não é de hoje", (self.out / "WHATSAPP_LEIA.txt").read_text("utf-8"))
+
+    def test_restore_without_backup_fails_cleanly(self):
+        empty = self.tmp / "vazio"
+        empty.mkdir()
+        self.assertEqual(ba.main(["whatsapp-restaurar", "--pasta", str(empty), "--sim"]), 1)

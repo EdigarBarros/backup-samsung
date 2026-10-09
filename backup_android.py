@@ -73,8 +73,8 @@ MEDIA_EXTS = {
 NOT_BACKED_UP = [
     "Dados internos dos apps (logins, progresso de jogos, configurações): o Android "
     "bloqueia o acesso sem root. Use o backup próprio de cada app.",
-    "Histórico de conversas do WhatsApp em formato legível: o arquivo msgstore.db.crypt "
-    "é criptografado e só restaura em Android. Para iPhone use o 'Mover para iOS'.",
+    "Histórico do WhatsApp direto no iPhone: o arquivo msgstore.db.crypt é criptografado "
+    "e só restaura em Android. Use o comando 'whatsapp' e depois o 'Mover para iOS'.",
     "MMS (mensagens com foto do SMS) e mensagens RCS/Chat.",
     "Senhas salvas, contas de bancos e apps autenticadores (2FA).",
     "Samsung Notes, Samsung Pass e Saúde: ficam fora da área acessível; "
@@ -987,6 +987,203 @@ def cmd_drive(args) -> int:
     return rc
 
 
+# ---- WhatsApp -------------------------------------------------------------
+# (pacote, nome da pasta). A pasta moderna fica em Android/media/<pacote>/<nome>;
+# até o Android 10 ficava direto na raiz da memória interna.
+WA_VARIANTS = [("com.whatsapp", "WhatsApp"), ("com.whatsapp.w4b", "WhatsApp Business")]
+WA_MAX_AGE_HOURS = 24
+
+WA_BEFORE = """ANTES DE COPIAR, ATUALIZE O BACKUP DENTRO DO WHATSAPP:
+  WhatsApp > Configurações > Conversas > Backup de conversas > FAZER BACKUP
+  (espere chegar a 100%). Isso grava o arquivo com as conversas de HOJE.
+
+  Nessa mesma tela, veja se o "Backup criptografado de ponta a ponta" está ATIVO.
+  Se estiver, você vai precisar da SENHA ou da CHAVE de 64 dígitos para restaurar.
+  Sem ela, NINGUÉM recupera as conversas (nem o WhatsApp).
+"""
+
+WA_GUIDE = """COMO RESTAURAR ESTE BACKUP DO WHATSAPP E LEVAR PARA O IPHONE
+============================================================
+
+O que você precisa:
+  * um celular Android qualquer (emprestado serve);
+  * o MESMO NÚMERO de telefone (chip ou eSIM) para receber o código SMS;
+  * a senha/chave, se o backup criptografado de ponta a ponta estava ativo.
+
+PASSO 1 - Colocar o backup no Android emprestado
+  a) Instale o WhatsApp pela Play Store, mas NÃO ABRA ainda.
+     (Se ele já estiver configurado com outra conta: Configurações > Apps >
+     WhatsApp > Armazenamento > Limpar dados.)
+  b) Ative a Depuração USB nele, conecte no PC e rode:
+       python backup_android.py whatsapp-restaurar --pasta "<esta pasta de backup>"
+
+PASSO 2 - Restaurar
+  Abra o WhatsApp, confirme o SEU número e, quando ele encontrar o backup,
+  toque em RESTAURAR. Se ele oferecer um backup do Google Drive, também serve:
+  escolha o mais recente.
+
+PASSO 3 - Passar para o iPhone
+  Com o iPhone NOVO ou APAGADO, na configuração inicial escolha
+  "Transferir apps e dados > Do Android". No Android emprestado, abra o app
+  "Mover para iOS" (Play Store), digite o código e MARQUE O WHATSAPP.
+  Os dois carregando e no mesmo Wi-Fi.
+
+PASSO 4 - Limpar o Android emprestado
+  Depois de conferir as conversas no iPhone, apague o WhatsApp do emprestado.
+
+IMPORTANTE: o arquivo msgstore.db.crypt* é criptografado. Ele só abre no
+WhatsApp, no seu número. Não adianta tentar abrir no computador.
+"""
+
+
+@dataclass
+class WaBackup:
+    package: str
+    folder: str
+    root: str  # pasta remota onde fica Databases/Backups/Media
+    latest: Optional[RemoteFile] = None
+
+
+def wa_remote_roots(package: str, folder: str) -> List[str]:
+    return [f"{INTERNAL}/Android/media/{package}/{folder}", f"{INTERNAL}/{folder}"]
+
+
+def latest_msgstore(files: List[RemoteFile]) -> Optional[RemoteFile]:
+    stores = [f for f in files
+              if "/Databases/" in f.path and re.match(r"msgstore.*\.db\.crypt\d*$", f.path.rsplit("/", 1)[-1])]
+    return max(stores, key=lambda f: f.mtime) if stores else None
+
+
+def installed_packages(adb: Adb) -> set:
+    out = adb.shell("pm list packages")
+    return {l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("package:")}
+
+
+def cmd_whatsapp(args) -> int:
+    adb = connect(args.serial, interactive=not args.sim)
+    info = device_info(adb)
+    dest = Path(args.destino).expanduser().resolve() if args.destino else default_backup_dir(info)
+    print(f"\nCelular: {info['fabricante']} {info['modelo']}\nBackup em: {dest}\n")
+    print(WA_BEFORE)
+    if not ask_yes("Já fez o backup dentro do WhatsApp agora há pouco?", assume_yes=args.sim):
+        print("Faça o backup no WhatsApp primeiro e rode esta opção de novo.")
+        return 1
+
+    pkgs = installed_packages(adb)
+    found: List[WaBackup] = []
+    problems: List[str] = []
+    for package, folder in WA_VARIANTS:
+        roots = wa_remote_roots(package, folder)
+        files = list_remote_files(adb, roots)
+        if package not in pkgs and not files:
+            continue
+        print(f"[{folder}] {len(files)} arquivos, {human_size(sum(f.size for f in files))}.")
+        latest = latest_msgstore(files)
+        if not latest:
+            msg = (f"{folder}: nenhum arquivo de conversas (msgstore) encontrado. Faça o backup "
+                   "dentro do WhatsApp e rode de novo. As mídias serão copiadas mesmo assim.")
+            print("  ATENÇÃO: " + msg)
+            problems.append(msg)
+        else:
+            age_h = (time.time() - latest.mtime) / 3600
+            when = dt.datetime.fromtimestamp(latest.mtime).strftime("%d/%m/%Y %H:%M")
+            print(f"  Conversas: {latest.path.rsplit('/', 1)[-1]} ({human_size(latest.size)}), de {when}.")
+            if age_h > WA_MAX_AGE_HOURS:
+                print(f"  ATENÇÃO: esse backup tem {int(age_h)} horas. Conversas mais novas NÃO estão nele.")
+                if not ask_yes("  Copiar mesmo assim?", default=False, assume_yes=args.sim):
+                    return 1
+                problems.append(f"{folder}: backup de conversas de {when} (não é de hoje).")
+        found.append(WaBackup(package, folder, roots[0], latest))
+        # Um backup novo pode ter o mesmo tamanho do antigo: aqui a data também conta.
+        for f in files:
+            if "/Databases/" in f.path or "/Backups/" in f.path:
+                lp = local_path_for(dest / "arquivos", f.path[len(INTERNAL) + 1:])
+                if lp.exists() and abs(int(lp.stat().st_mtime) - f.mtime) > 2:
+                    lp.unlink()
+        res = pull_files(adb, files, INTERNAL, dest / "arquivos")
+        problems += res.errors
+
+    if not found:
+        print("WhatsApp não encontrado neste celular.")
+        return 1
+    lines = ["BACKUP DO WHATSAPP", "=" * 60,
+             f"Aparelho: {info['fabricante']} {info['modelo']}",
+             f"Data: {dt.datetime.now():%d/%m/%Y %H:%M}", ""]
+    for wa in found:
+        if wa.latest:
+            when = dt.datetime.fromtimestamp(wa.latest.mtime).strftime("%d/%m/%Y %H:%M")
+            lines.append(f"{wa.folder}: conversas salvas em {when} "
+                         f"({wa.latest.path[len(INTERNAL) + 1:]})")
+        else:
+            lines.append(f"{wa.folder}: SEM arquivo de conversas (só mídias)")
+    if problems:
+        lines += ["", "PROBLEMAS:"] + [f"  - {p}" for p in problems]
+    lines += ["", WA_GUIDE]
+    (dest / "WHATSAPP_LEIA.txt").write_text("\n".join(lines) + "\n", "utf-8")
+
+    print("\n" + "=" * 60)
+    ok = all(wa.latest for wa in found) and not problems
+    print("Backup do WhatsApp concluído!" if ok else "Backup do WhatsApp concluído COM AVISOS (veja acima).")
+    print(f"Leia {dest / 'WHATSAPP_LEIA.txt'} para restaurar depois.")
+    print("Lembrete: guarde também a senha/chave do backup criptografado, se usar.")
+    return 0 if ok else 2
+
+
+def find_local_wa(backup: Path, folder: str) -> Optional[Path]:
+    package = dict((f, p) for p, f in WA_VARIANTS)[folder]
+    for rel in (f"Android/media/{package}/{folder}", folder):
+        p = local_path_for(backup / "arquivos", rel)
+        if (p / "Databases").is_dir():
+            return p
+    return None
+
+
+def cmd_whatsapp_restore(args) -> int:
+    backup = find_backup_dir(args.pasta)
+    sources = [(p, f, find_local_wa(backup, f)) for p, f in WA_VARIANTS]
+    sources = [s for s in sources if s[2]]
+    if not sources:
+        print(f"Não achei backup do WhatsApp (pasta Databases) em {backup}.\n"
+              "Rode antes:  python backup_android.py whatsapp")
+        return 1
+    adb = connect(args.serial, interactive=not args.sim)
+    info = device_info(adb)
+    print(f"\nCelular de DESTINO: {info['fabricante']} {info['modelo']} (Android {info['android']})")
+    pkgs = installed_packages(adb)
+    for package, folder, local in sources:
+        if package not in pkgs:
+            print(f"\n{folder} não está instalado neste celular. Instale pela Play Store, "
+                  "NÃO abra, e rode este comando de novo.")
+            return 1
+        print(f"\n[{folder}] Vai copiar o backup de {local}")
+        print("  O WhatsApp neste celular ainda NÃO pode ter sido configurado (sem número"
+              " verificado). Se já foi, limpe os dados do app antes.")
+        if not ask_yes("  Continuar?", assume_yes=args.sim):
+            return 1
+        remote = f"{INTERNAL}/Android/media/{package}/{folder}"
+        adb.shell(f"mkdir -p {shlex.quote(remote)}")
+        parts = ["Databases", "Backups"] + ([] if args.sem_midia else ["Media"])
+        for part in parts:
+            src = local / part
+            if not src.is_dir():
+                continue
+            print(f"  Enviando {part} ({human_size(dir_size(src)[1])})...")
+            rc, _out, err = adb.run(["push", str(src), remote + "/"], check=False)
+            if rc != 0:
+                print(f"  Falhou: {err.strip()}")
+                return 1
+        check = adb.shell(f"ls {shlex.quote(remote + '/Databases')}")
+        if "msgstore" not in check:
+            print("  Não consegui confirmar o arquivo no celular. Copie a pasta manualmente"
+                  f" para {remote}/ pelo explorador de arquivos.")
+            return 1
+        print("  OK, backup colocado no lugar certo.")
+    print("\nAgora: abra o WhatsApp, confirme o SEU número e toque em RESTAURAR.\n"
+          "Depois use o 'Mover para iOS' para levar tudo ao iPhone "
+          "(passo a passo em WHATSAPP_LEIA.txt).")
+    return 0
+
+
 # ---- iPhone ---------------------------------------------------------------
 IPHONE_GUIDE = """COMO PASSAR SEUS DADOS PARA O IPHONE
 ====================================
@@ -1089,7 +1286,9 @@ CHECKLIST = """CHECKLIST ANTES DE VENDER O CELULAR
         Um backup só em um lugar não é backup.
 [ ] 3. Vai para iPhone? Use o "Mover para iOS" ANTES de resetar o Android
         (é o único jeito de levar o histórico do WhatsApp e os SMS).
-        Vai ficar no Android? WhatsApp > Configurações > Conversas > Backup.
+        Sem iPhone ainda? Salve o WhatsApp com "python backup_android.py whatsapp"
+        e restaure depois num Android emprestado (passo a passo no WHATSAPP_LEIA.txt).
+        Anote a senha/chave do backup criptografado, se estiver ativo.
 [ ] 4. APPS AUTENTICADORES (Google Authenticator, Microsoft Authenticator,
         Authy...): transfira as contas para o novo celular. Se esquecer,
         você pode perder acesso a e-mails, redes sociais e corretoras.
@@ -1190,6 +1389,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--sim", action="store_true", help="não fazer perguntas")
     s.set_defaults(func=cmd_backup)
 
+    s = sub.add_parser("whatsapp", help="copia e confere o backup do WhatsApp (para restaurar depois)")
+    s.add_argument("--destino", help="pasta onde salvar (padrão: ./Backup_<modelo>)")
+    s.add_argument("--serial")
+    s.add_argument("--sim", action="store_true", help="não fazer perguntas")
+    s.set_defaults(func=cmd_whatsapp)
+
+    s = sub.add_parser("whatsapp-restaurar", help="coloca o backup do WhatsApp em outro Android")
+    s.add_argument("--pasta", help="pasta do backup (padrão: a mais recente aqui)")
+    s.add_argument("--sem-midia", action="store_true", help="envia só as conversas, sem fotos/vídeos")
+    s.add_argument("--serial")
+    s.add_argument("--sim", action="store_true", help="não fazer perguntas")
+    s.set_defaults(func=cmd_whatsapp_restore)
+
     s = sub.add_parser("drive", help="envia o backup para o Google Drive")
     s.add_argument("--pasta", help="pasta do backup (padrão: a mais recente aqui)")
     s.add_argument("--destino", default="Backup Celular", help="pasta no Drive")
@@ -1216,17 +1428,20 @@ MENU = """
 ==============================================
   1. Verificar se o celular está conectado
   2. Fazer BACKUP COMPLETO
-  3. Enviar o backup para o GOOGLE DRIVE
-  4. Preparar arquivos para o IPHONE
-  5. Checklist antes de vender
-  6. Instalar ferramentas (ADB e rclone)
+  3. Backup do WHATSAPP (conversas + mídias)
+  4. Restaurar o WhatsApp em OUTRO Android
+  5. Enviar o backup para o GOOGLE DRIVE
+  6. Preparar arquivos para o IPHONE
+  7. Checklist antes de vender
+  8. Instalar ferramentas (ADB e rclone)
   0. Sair
 """
 
 
 def interactive_menu(parser: argparse.ArgumentParser) -> int:
-    actions = {"1": ["verificar"], "2": ["backup"], "3": ["drive"], "4": ["iphone"],
-               "5": ["checklist"], "6": ["instalar"]}
+    actions = {"1": ["verificar"], "2": ["backup"], "3": ["whatsapp"],
+               "4": ["whatsapp-restaurar"], "5": ["drive"], "6": ["iphone"],
+               "7": ["checklist"], "8": ["instalar"]}
     while True:
         print(MENU.format(v=VERSION))
         try:
