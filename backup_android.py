@@ -14,7 +14,8 @@ Requisitos: Python 3.8+ e o ADB (Android Platform Tools). O próprio programa
 consegue baixar o ADB e o rclone com o comando "instalar".
 
 Uso rápido:
-  python backup_android.py              -> menu interativo
+  python backup_android.py              -> abre a janela do app
+  python backup_android.py menu         -> menu em modo texto
   python backup_android.py backup       -> backup completo
   python backup_android.py --help       -> todos os comandos
 """
@@ -32,6 +33,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import zipfile
@@ -40,7 +42,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 VERSION = "1.0.0"
-HERE = Path(__file__).resolve().parent
+# No .exe (PyInstaller) a pasta de trabalho é a do executável, não a temporária.
+HERE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 TOOLS_DIR = HERE / "ferramentas"
 INTERNAL = "/storage/emulated/0"
 
@@ -82,6 +85,11 @@ NOT_BACKED_UP = [
     "Pasta Android/data e Android/obb (bloqueadas a partir do Android 11).",
 ]
 
+# .exe sem console: sem stdout. Evita erro ao imprimir.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(errors="replace")
@@ -110,9 +118,42 @@ def human_time(seconds: float) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}"
 
 
+# A janela (backup_gui) troca estes ganchos: perguntas viram caixas de diálogo e o
+# botão "Parar" liga CANCEL.
+ASK_HOOK = None
+CANCEL = threading.Event()
+# Sem isso, cada chamada ao adb/rclone abriria uma janela preta no Windows.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def check_cancel() -> None:
+    if CANCEL.is_set():
+        raise KeyboardInterrupt
+
+
+def run_streaming(cmd: List[str]) -> int:
+    """Roda um programa externo mostrando a saída dele aos poucos (terminal ou janela)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    assert proc.stdout
+    try:
+        for raw in iter(proc.stdout.readline, b""):
+            sys.stdout.write(raw.decode("utf-8", "replace"))
+            sys.stdout.flush()
+            if CANCEL.is_set():
+                proc.terminate()
+                break
+    finally:
+        rc = proc.wait()
+    check_cancel()
+    return rc
+
+
 def ask_yes(question: str, default: bool = True, assume_yes: bool = False) -> bool:
     if assume_yes:
         return True
+    if ASK_HOOK is not None:
+        return ASK_HOOK(question.strip(), default)
     suffix = " [S/n] " if default else " [s/N] "
     try:
         answer = input(question + suffix).strip().lower()
@@ -174,6 +215,7 @@ class Progress:
         self._last = 0.0
 
     def update(self, files: int, nbytes: int, force: bool = False) -> None:
+        check_cancel()
         self.files += files
         self.bytes += nbytes
         now = time.time()
@@ -256,7 +298,8 @@ class Adb:
 
     def run(self, args: Iterable[str], check: bool = True, timeout: Optional[float] = None):
         proc = subprocess.run(
-            self._cmd(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout
+            self._cmd(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
         )
         out = proc.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
         err = proc.stderr.decode("utf-8", "replace").replace("\r\n", "\n")
@@ -276,10 +319,12 @@ def connect(serial: Optional[str] = None, interactive: bool = True) -> Adb:
     exe = find_adb()
     if not exe:
         raise AdbError(
-            "ADB não encontrado. Rode:  python backup_android.py instalar\n"
+            "ADB não encontrado. No app, clique em 'Instalar ADB e rclone'\n"
+            "  (linha de comando: python backup_android.py instalar)\n"
             "  (ou baixe em https://developer.android.com/tools/releases/platform-tools)"
         )
-    proc = subprocess.run([exe, "devices", "-l"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.run([exe, "devices", "-l"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
     devices = parse_devices(proc.stdout.decode("utf-8", "replace"))
     if serial:
         devices = [d for d in devices if d.serial == serial]
@@ -308,7 +353,7 @@ def connect(serial: Optional[str] = None, interactive: bool = True) -> Adb:
         print("Mais de um celular conectado:")
         for i, d in enumerate(ready, 1):
             print(f"  {i}. {d.label} ({d.serial})")
-        if interactive:
+        if interactive and ASK_HOOK is None and sys.stdin and sys.stdin.isatty():
             choice = input("Qual usar? [1] ").strip() or "1"
             device = ready[int(choice) - 1]
         else:
@@ -454,6 +499,7 @@ def pull_files(adb: Adb, files: List[RemoteFile], root: str, dest: Path) -> Pull
     todo.sort(key=lambda x: (str(x[1].parent), x[1].name))
     progress = Progress(len(todo), need)
     for batch in _batches(todo):
+        check_cancel()
         target_dir = batch[0][1].parent
         target_dir.mkdir(parents=True, exist_ok=True)
         if len(batch) == 1:
@@ -916,7 +962,7 @@ def write_text_report(dest: Path, report: dict) -> None:
     lines += ["", f"PROBLEMAS: {len(report['erros'])} (detalhes em erros.txt)", "",
               "O QUE NÃO DÁ PARA COPIAR PELO CABO (faça manualmente):"]
     lines += [f"  - {item}" for item in NOT_BACKED_UP]
-    lines += ["", "Antes de vender: python backup_android.py checklist"]
+    lines += ["", "Antes de vender: botão 'Checklist antes de vender' no app."]
     (dest / "RELATORIO.txt").write_text("\n".join(lines) + "\n", "utf-8")
 
 
@@ -943,24 +989,25 @@ def cmd_drive(args) -> int:
     src = find_backup_dir(args.pasta)
     rclone = find_rclone()
     if not rclone:
-        print("rclone não encontrado. Rode:  python backup_android.py instalar\n"
+        print("rclone não encontrado. No app, clique em 'Instalar ADB e rclone'\n"
               "  (ou baixe em https://rclone.org/downloads/)")
         return 1
     remote = args.remote
-    remotes = subprocess.run([rclone, "listremotes"], stdout=subprocess.PIPE).stdout.decode().split()
+    remotes = subprocess.run([rclone, "listremotes"], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                             creationflags=NO_WINDOW).stdout.decode().split()
     if f"{remote}:" not in remotes:
         print(f"Ainda não há uma conta Google ligada ao rclone (nome '{remote}').")
         print("Vou abrir o navegador para você entrar na sua conta Google e autorizar.")
         if not ask_yes("Continuar?", assume_yes=args.sim):
             return 1
-        rc = subprocess.run([rclone, "config", "create", remote, "drive", "scope", "drive"]).returncode
+        rc = run_streaming([rclone, "config", "create", remote, "drive", "scope", "drive"])
         if rc != 0:
             print("Não consegui configurar. Tente manualmente:  rclone config")
             return 1
 
     count, size = dir_size(src)
     about = subprocess.run([rclone, "about", f"{remote}:", "--json"], stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL)
+                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
     try:
         free = json.loads(about.stdout.decode()).get("free")
     except ValueError:
@@ -976,13 +1023,14 @@ def cmd_drive(args) -> int:
     source = src / args.subpasta if args.subpasta else src
     target = f"{remote}:{args.destino}/{src.name}" + (f"/{args.subpasta}" if args.subpasta else "")
     print(f"\nEnviando para {target} ... (pode interromper e rodar de novo: ele continua)\n")
-    rc = subprocess.run([rclone, "copy", str(source), target, "--progress",
-                         "--transfers", "4", "--checkers", "8", "--retries", "5"]).returncode
+    rc = run_streaming([rclone, "copy", str(source), target, "--transfers", "4", "--checkers", "8",
+                        "--retries", "5", "--stats", "3s", "--stats-one-line",
+                        "--stats-log-level", "NOTICE"])
     if rc != 0:
         print("\nO envio terminou com erros. Rode o mesmo comando de novo para tentar o que faltou.")
         return rc
     print("\nConferindo se tudo chegou...")
-    rc = subprocess.run([rclone, "check", str(source), target, "--one-way", "--size-only"]).returncode
+    rc = run_streaming([rclone, "check", str(source), target, "--one-way", "--size-only"])
     print("Tudo conferido no Google Drive!" if rc == 0 else "Há diferenças: rode o envio de novo.")
     return rc
 
@@ -1014,8 +1062,9 @@ PASSO 1 - Colocar o backup no Android emprestado
   a) Instale o WhatsApp pela Play Store, mas NÃO ABRA ainda.
      (Se ele já estiver configurado com outra conta: Configurações > Apps >
      WhatsApp > Armazenamento > Limpar dados.)
-  b) Ative a Depuração USB nele, conecte no PC e rode:
-       python backup_android.py whatsapp-restaurar --pasta "<esta pasta de backup>"
+  b) Ative a Depuração USB nele, conecte no PC, abra o app Backup Android,
+     escolha esta pasta de backup e clique em "3. Restaurar WhatsApp".
+     (linha de comando: python backup_android.py whatsapp-restaurar --pasta "<pasta>")
 
 PASSO 2 - Restaurar
   Abra o WhatsApp, confirme o SEU número e, quando ele encontrar o backup,
@@ -1144,7 +1193,7 @@ def cmd_whatsapp_restore(args) -> int:
     sources = [s for s in sources if s[2]]
     if not sources:
         print(f"Não achei backup do WhatsApp (pasta Databases) em {backup}.\n"
-              "Rode antes:  python backup_android.py whatsapp")
+              "Faça antes o '2. Backup do WhatsApp'.")
         return 1
     adb = connect(args.serial, interactive=not args.sim)
     info = device_info(adb)
@@ -1168,9 +1217,8 @@ def cmd_whatsapp_restore(args) -> int:
             if not src.is_dir():
                 continue
             print(f"  Enviando {part} ({human_size(dir_size(src)[1])})...")
-            rc, _out, err = adb.run(["push", str(src), remote + "/"], check=False)
-            if rc != 0:
-                print(f"  Falhou: {err.strip()}")
+            if run_streaming(adb._cmd(["push", str(src), remote + "/"])) != 0:
+                print("  Falhou ao enviar (veja a mensagem acima).")
                 return 1
         check = adb.shell(f"ls {shlex.quote(remote + '/Databases')}")
         if "msgstore" not in check:
@@ -1221,7 +1269,7 @@ O histórico do WhatsApp NÃO passa pelo backup do Google Drive para o iPhone.
    As conversas ficam aqui em .txt para consulta.
 
 5) ARQUIVOS, DOCUMENTOS E DOWNLOADS
-   Envie para o Google Drive (python backup_android.py drive) e acesse pelo
+   Envie para o Google Drive (botão "4. Enviar para o Google Drive") e acesse pelo
    app Google Drive ou pelo app Arquivos do iPhone.
 """
 
@@ -1286,7 +1334,7 @@ CHECKLIST = """CHECKLIST ANTES DE VENDER O CELULAR
         Um backup só em um lugar não é backup.
 [ ] 3. Vai para iPhone? Use o "Mover para iOS" ANTES de resetar o Android
         (é o único jeito de levar o histórico do WhatsApp e os SMS).
-        Sem iPhone ainda? Salve o WhatsApp com "python backup_android.py whatsapp"
+        Sem iPhone ainda? Salve o WhatsApp com o botão "2. Backup do WhatsApp"
         e restaure depois num Android emprestado (passo a passo no WHATSAPP_LEIA.txt).
         Anote a senha/chave do backup criptografado, se estiver ativo.
 [ ] 4. APPS AUTENTICADORES (Google Authenticator, Microsoft Authenticator,
@@ -1417,6 +1465,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("checklist", help="o que fazer antes de vender o celular")
     s.set_defaults(func=cmd_checklist)
 
+    sub.add_parser("menu", help="menu em modo texto (sem janela)")
+
     s = sub.add_parser("instalar", help="baixa ADB e rclone para a pasta ferramentas/")
     s.set_defaults(func=cmd_install)
     return p
@@ -1466,6 +1516,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.cmd:
+        try:
+            import backup_gui
+        except ImportError:  # Python sem tkinter: usa o menu de texto
+            return interactive_menu(parser)
+        return backup_gui.main()
+    if args.cmd == "menu":
         return interactive_menu(parser)
     try:
         return args.func(args)

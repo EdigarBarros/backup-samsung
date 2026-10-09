@@ -1,0 +1,53 @@
+name: Gerar app
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests -v
+
+  windows:
+    needs: testes
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller==6.11.1
+      - name: Gerar BackupAndroid.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name BackupAndroid --hidden-import backup_gui backup_android.py
+      - name: Teste rápido do .exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\BackupAndroid.exe -ArgumentList "checklist" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "o .exe falhou (código $($p.ExitCode))" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BackupAndroid-Windows
+          path: dist/BackupAndroid.exe
+      - name: Publicar na página de downloads
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-windows
+          name: Backup Android para Windows
+          make_latest: true
+          files: dist/BackupAndroid.exe
+          body: |
+            Baixe o **BackupAndroid.exe** abaixo, coloque numa pasta com bastante espaço livre
+            (os backups são salvos ao lado dele) e abra com dois cliques.
+
+            O Windows pode mostrar "O Windows protegeu o computador" porque o app não tem
+            assinatura digital paga: clique em **Mais informações > Executar assim mesmo**.

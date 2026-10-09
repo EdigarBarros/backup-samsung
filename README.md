@@ -40,13 +40,19 @@ explica como resolver cada item.
 
 ## Passo a passo
 
-### 1. Prepare o computador
+### 1. Baixe o app (Windows)
 
-Instale o **Python 3** (https://www.python.org/downloads/). No Windows, marque
-**"Add Python to PATH"** na instalação.
+1. Abra a página **Releases** do repositório (coluna da direita no GitHub) e baixe o
+   **BackupAndroid.exe**.
+2. Crie uma pasta num disco com **espaço livre maior que o usado no celular**
+   (ex.: `D:\Backup Celular`) e coloque o `.exe` lá dentro. Os backups ficam ao lado dele.
+3. Abra com dois cliques. Se o Windows mostrar "O Windows protegeu o computador", clique
+   em **Mais informações > Executar assim mesmo**. O aviso aparece porque o app não tem
+   assinatura digital paga, não porque tem vírus.
+4. Na primeira vez, o app oferece baixar o ADB (Google) e o rclone. Aceite.
 
-Baixe este projeto (botão **Code > Download ZIP** no GitHub) e extraia numa pasta
-de um disco com **espaço livre maior que o usado no celular**.
+> Mac ou Linux: instale o Python 3 e rode `python3 backup_android.py` (abre a mesma
+> janela). Sem janela: `python3 backup_android.py menu`.
 
 ### 2. Prepare o celular
 
@@ -59,42 +65,41 @@ de um disco com **espaço livre maior que o usado no celular**.
 > Windows + Samsung: se o celular não aparecer, instale o *Samsung Android USB Driver*
 > (site de desenvolvedores da Samsung).
 
-### 3. Rode o programa
-
-- **Windows:** dois cliques em `INICIAR-WINDOWS.bat`
-- **Mac/Linux:** `./iniciar-mac-linux.sh`
-
-Aparece este menu:
+### 3. Use o app
 
 ```
-  1. Verificar se o celular está conectado
-  2. Fazer BACKUP COMPLETO
-  3. Backup do WHATSAPP (conversas + mídias)
-  4. Restaurar o WhatsApp em OUTRO Android
-  5. Enviar o backup para o GOOGLE DRIVE
-  6. Preparar arquivos para o IPHONE
-  7. Checklist antes de vender
-  8. Instalar ferramentas (ADB e rclone)
+┌────────────────────────────────────────────────────────────┐
+│ Backup Android                                             │
+│ Pasta do backup: [________________________] [Escolher...]  │
+│ [ Verificar celular ]          [ 1. Backup COMPLETO ]       │
+│ [ 2. Backup do WhatsApp ]      [ 3. Restaurar WhatsApp ]    │
+│ [ 4. Enviar p/ Google Drive ]  [ 5. Preparar p/ iPhone ]    │
+│ [ Checklist antes de vender ]  [ Instalar ADB e rclone ]    │
+│ Concluído!                        [Abrir pasta] [Parar]    │
+│ ┌────────────────────────────────────────────────────────┐ │
+│ │ [ 45.2%] 1234/5000 arquivos | 12.3 GB de 40.1 GB ...   │ │
+│ └────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────┘
 ```
 
-Na primeira vez, use a ordem **8 → 1 → 2**.
-
-O backup fica na pasta `Backup_<fabricante>_<modelo>`, ao lado do programa.
+Ordem na primeira vez: **Verificar celular → 1. Backup COMPLETO**.
+O **Parar** pode ser usado a qualquer momento: ao clicar de novo, o backup continua de
+onde parou.
 
 ### 4. WhatsApp: guardar agora, restaurar depois
 
 O backup do WhatsApp **não abre direto no iPhone**, porque o iPhone só restaura
 backups do iCloud. Mas dá para guardar agora e usar depois neste caminho:
 
-**backup (opção 3) → outro Android com o MESMO NÚMERO (opção 4) → restaurar →
+**backup (botão 2) → outro Android com o MESMO NÚMERO (botão 3) → restaurar →
 "Mover para iOS" desse Android para o iPhone.**
 
 1. No WhatsApp: **Configurações > Conversas > Backup de conversas > Fazer backup**.
-2. Opção **3** do menu. O programa copia conversas, mídias e configurações, **mostra
+2. Botão **2. Backup do WhatsApp**. O programa copia conversas, mídias e configurações, **mostra
    a data do backup e avisa se ele não for de hoje**. Também cria o arquivo
    `WHATSAPP_LEIA.txt` com o passo a passo da restauração.
 3. Quando tiver o Android emprestado: instale o WhatsApp **sem abrir**, conecte no PC
-   e use a opção **4**. Depois abra o WhatsApp, confirme seu número e toque em
+   e use o botão **3. Restaurar WhatsApp**. Depois abra o WhatsApp, confirme seu número e toque em
    **Restaurar**.
 4. No iPhone novo (ou apagado), use o **Mover para iOS** a partir desse Android e
    marque o WhatsApp.
@@ -107,7 +112,7 @@ backups do iCloud. Mas dá para guardar agora e usar depois neste caminho:
 
 ### 5a. Mandar para o Google Drive
 
-Opção **5** do menu. Na primeira vez abre o navegador para você entrar na conta
+Botão **4. Enviar para o Google Drive**. Na primeira vez abre o navegador para você entrar na conta
 Google. Quem faz o envio é o [rclone](https://rclone.org), que é open source. O
 programa confere o espaço livre no Drive, envia, continua de onde parou se cair, e
 no fim confere se tudo chegou.
@@ -118,7 +123,7 @@ no fim confere se tudo chegou.
 
 ### 5b. Passar para o iPhone
 
-Opção **6** do menu. Ela cria `Para_iPhone/` com:
+Botão **5. Preparar para o iPhone**. Ele cria `Para_iPhone/` com:
 
 - `Fotos_e_Videos/`: câmera, prints, downloads e mídias do WhatsApp, juntos e
   prontos pra mandar ao iCloud ou ao Google Fotos (sem ocupar espaço duplicado no
@@ -133,7 +138,7 @@ Opção **6** do menu. Ela cria `Para_iPhone/` com:
 > funcionando**. Faça isso **antes** de resetar e vender o celular. Use este backup
 > como cópia de segurança e para tudo o que o Mover para iOS não leva.
 
-## Linha de comando
+## Linha de comando (opcional, com Python)
 
 ```bash
 python backup_android.py backup                         # tudo
@@ -172,6 +177,12 @@ Os itens que mais dão dor de cabeça quando esquecidos:
 - **remover a conta Google e a Samsung** antes de resetar, senão o comprador fica
   travado no bloqueio de fábrica (FRP);
 - cadastrar o celular novo nos **bancos**.
+
+## Como o .exe é gerado
+
+O GitHub Actions (`.github/workflows/build.yml`) roda os testes, gera o
+`BackupAndroid.exe` com o PyInstaller num Windows, confere se ele abre e publica na
+página Releases. Isso acontece a cada alteração enviada ao repositório.
 
 ## Testes
 
